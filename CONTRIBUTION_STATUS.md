@@ -1,13 +1,17 @@
 # Contribution status
 
 - Experimental integration: implemented as source and a portable Windows package.
-- Native source branch: https://github.com/jasonlok000/blender-neural-finishing-core/tree/codex/neural-finishing-prototype
-- Independent usability branch: https://github.com/jasonlok000/blender-neural-finishing-core/tree/codex/vector-pass-explanation
+- Native source branch on Blender Projects: https://projects.blender.org/Jason-Lok/blender/src/branch/codex/neural-finishing-prototype
+- Independent usability branch on Blender Projects: https://projects.blender.org/Jason-Lok/blender/src/branch/codex/vector-pass-explanation
+- The Blender Projects branches were fetched and verified to have identical file
+  contents to the prepared GitHub branches. Commit metadata credits Jason-Lok.
 - Source, protocol and documentation: https://github.com/jasonlok000/blender-neural-finishing
 - Automated validation: non-rendering fixture tests, syntax and native module registration only.
 - Demo scene: prepared and saved; no images or neural results rendered for this prototype.
 - Official Blender design discussion / PR: **not submitted**. Blender Projects
-  sign-in and human review are pending. Draft preparation material is in docs/.
+  account activation is complete. Contributor agreement and human review remain
+  pending. The native WIP comparison/review form is prepared at:
+  https://projects.blender.org/blender/blender/compare/main...Jason-Lok:codex/neural-finishing-prototype?expand=1
 - Official acceptance / merge: **not achieved**.
 
 The user explicitly requested no rendering validation during an existing
