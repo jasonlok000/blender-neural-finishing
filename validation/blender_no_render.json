@@ -1,0 +1,22 @@
+{
+  "render_invocations": 0,
+  "gpu_inference_invocations": 0,
+  "checks": [
+    "preview_in_blender.py contains no render calls",
+    "make_demo.py contains no render calls",
+    "feature disabled by default",
+    "registration does not start work",
+    "registration creates no subprocess",
+    "native operator registered",
+    "panel belongs to Render Properties",
+    "default mode is current frame",
+    "default style is Cinematic",
+    "active-render guard rejects before snapshot/render",
+    "file-only worker probe succeeds without NVIDIA initialization",
+    "file probe does not claim inference success",
+    "prototype unregisters cleanly"
+  ],
+  "other_background_blender_detected": true,
+  "blender_version": "5.2.2 LTS",
+  "status": "PASS - NON-RENDERING CHECKS ONLY"
+}

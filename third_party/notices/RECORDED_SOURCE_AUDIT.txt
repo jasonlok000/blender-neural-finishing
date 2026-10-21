@@ -1,0 +1,100 @@
+DLSS5 source and binary follow-up — 16 October 2026
+
+CONCLUSION
+There is now strong, specific evidence that our tests execute NVIDIA's leaked
+DLSS5 neural model through a community hardware-compatibility implementation.
+The working library is not an unmodified, NVIDIA-supported RTX3090 release.
+However, its failed whole-file signature is explained by identifiable GPU
+compatibility modifications; it is not evidence that the model is a grading
+filter or that the NVIDIA model weights were replaced.
+
+WHAT THE SOURCE DOES
+The audited BlenDLSS bridge at commit b4a62f77ef2de2cbc610be7fee344d1c0854b241
+loads NVSDK_NGX_D3D12_Init_Ext, CreateFeature, EvaluateFeature and ReleaseFeature
+from the selected nvngx_dlssnr.dll. It creates Feature 18. Each evaluation is
+given GPU colour, depth and motion textures, temporal reset state, dimensions
+and the DLSSNR intensity, structure, tone and style controls. It waits for GPU
+completion and reads the resulting output texture back.
+
+Our Python native_backend.py calls that bridge directly. It does not import
+the upstream cpu_preview.py fallback. C10/C11 failures raise exceptions rather
+than switch to a CPU approximation. There is no added colour grade, sharpening
+or beauty filter in the delivered native image path. Flipping image orientation,
+restoring opaque alpha and discarding the extra indicator padding are wrapper
+operations. The comparison video separately adds labels and a divider.
+
+SOURCE DOES NOT EQUAL COMPLETE CORE SOURCE
+The NVIDIA network/inference implementation is proprietary compiled code.
+Reading the wrapper alone cannot prove its internal math. The binary comparison
+below provides independent evidence about what the working runtime contains.
+
+BINARY COMPARISON AGAINST THE NVIDIA-SIGNED COPY
+Both runtime files identify as 310.8.0.0 and contain 165840496 bytes.
+Signed comparison file SHA256:
+e16bcf15e16e13f527491cdf7845b2fe6521a738d8f7c9c721866a8496e1fc8e
+Working community file SHA256:
+dcc0dc2414aedec4a8e084647070383be068554042587180c20c784d4772d36f
+
+1. The WEIGHTS_HT resource is IDENTICAL, byte for byte: 147695410 bytes.
+   Weight-resource SHA256 in both:
+   836f445d06ecd2e59bb9f17b84b91c143396fd76ccda1c9dc7fe81d5edd548f4
+   Its contents include named network layers, e.g. block0.layer0.layer.
+
+2. The entire .rsrc resource section and .rdata section are identical.
+
+3. Exactly 19 bytes differ in host .text machine code. Disassembly locates
+   these changes at architecture requirements/dispatch checks. The minimum
+   architecture constant changes from 0x1b0 to 0x170; three older-architecture
+   branches skip the unsupported-architecture path. No other host-code byte
+   differs from the signed copy.
+
+4. The other 15310900 changed bytes are entirely within the 15 original CUDA
+   fat-binary containers. The signed containers have SM120 code. The working
+   containers provide compressed CUDA binaries declaring targets 75, 86, 89
+   and 120. Decompression produces valid NVIDIA CUDA ELF objects.
+
+5. In ALL 15 containers, the decompressed SM120 binary is IDENTICAL to the
+   signed original. All 15 also contain the added architecture-86 binary for
+   Ampere-family execution. This explains why a scan for uncompressed ELF
+   magic found none in the working file: its objects are compressed.
+
+6. There are ZERO changed bytes outside these GPU containers and the 19
+   host-code architecture edits. File sizes and all resource hashes agree.
+
+These checks establish substantially more than matching a product-name string
+or seeing a successful API return. They explain the invalid signature while
+showing that the signed NVIDIA weight resource and original SM120 code remain.
+
+WHAT REMAINS UNPROVEN
+The added architecture-86 GPU binaries are not bit-identical to architecture-
+120 binaries and cannot be expected to have identical machine instructions.
+Their numerical equivalence has not been tested against supported hardware.
+The complete proprietary inference graph has not been reimplemented/audited.
+Our controls, colour conventions and integration have not been certified by
+NVIDIA. This leaked model need not match the revision, tuning or content shown
+in a particular online demonstration. Static source review also does not prove
+the downloaded bridge binary was reproducibly built from that exact source.
+
+Accordingly, the defensible description is:
+"NVIDIA DLSS5 model weights, executed through an unofficial GPU compatibility
+runtime and Blender bridge; official numerical/visual equivalence unverified."
+
+The car's subtle result is an observation of this setup. It does not prove
+that DLSS5 only performs grading or establish its maximum possible improvement.
+Neither a failed publisher signature nor leaked distribution alone settles
+those questions. A known-image reference test would be the next useful
+functional comparison, rather than further arbitrary slider increases.
+
+EVIDENCE
+SOURCE_AUDIT_SUMMARY.json
+Runtime_Resources_Audit.json
+Runtime_Section_Audit.json
+CUDA_Fatbin_Audit.json
+CUDA_Compatibility_Comparison.json
+Host_Code_Patch_Disassembly.json
+Authenticode_Audit.json
+
+REFERENCES
+https://github.com/ProdbyLGCY/BLENDLSS
+https://github.com/perseval-BLR/NeuralScreen/blob/main/TECHNICAL.md
+https://research.nvidia.com/labs/adlr/DLSS5/

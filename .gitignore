@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+runtime/
+bin/
+dist/
+*.blend1
+*.partial*
+demo/renders/
+tools/github_access.py
+tools/publish.py
+validation/*local*.json

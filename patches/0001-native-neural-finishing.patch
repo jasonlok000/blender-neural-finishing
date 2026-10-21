@@ -1,0 +1,527 @@
+From ed66b29f3339fe32bd70322d36b4afa55e10de01 Mon Sep 17 00:00:00 2001
+From: Jason Lok <83269161+jasonlok000@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 17:46:09 -0400
+Subject: [PATCH 1/2] WIP: Render Properties entry point for external neural
+ finishing
+
+Adds opt-in session-only controls and explicit snapshot jobs without changing F12. The current worker is experimental and separate from Blender. Prepared with Codex assistance; end-to-end rendering, current-main build validation and human review remain pending.
+---
+ scripts/startup/bl_operators/__init__.py      |   3 +
+ .../startup/bl_operators/neural_finishing.py  | 286 ++++++++++++++++++
+ scripts/startup/bl_ui/__init__.py             |   1 +
+ .../bl_ui/properties_neural_finishing.py      |  48 +++
+ tests/python/bl_pyapi_neural_finishing.py     |  41 +++
+ 5 files changed, 379 insertions(+)
+ create mode 100644 scripts/startup/bl_operators/neural_finishing.py
+ create mode 100644 scripts/startup/bl_ui/properties_neural_finishing.py
+ create mode 100644 tests/python/bl_pyapi_neural_finishing.py
+
+diff --git a/scripts/startup/bl_operators/__init__.py b/scripts/startup/bl_operators/__init__.py
+index 54151f8..e8b33ea 100644
+--- a/scripts/startup/bl_operators/__init__.py
++++ b/scripts/startup/bl_operators/__init__.py
+@@ -34,6 +34,7 @@ _modules = [
+     "presets",
+     "project",
+     "render",
++    "neural_finishing",
+     "rigidbody",
+     "screen_play_rendered_anim",
+     "sequencer",
+@@ -73,6 +74,7 @@ def register():
+     bone_selection_sets.register()
+     copy_global_transform.register()
+     project.register()
++    neural_finishing.register()
+ 
+ 
+ def unregister():
+@@ -85,6 +87,7 @@ def unregister():
+     bone_selection_sets.unregister()
+     copy_global_transform.unregister()
+     project.unregister()
++    neural_finishing.unregister()
+ 
+     for mod in reversed(_modules_loaded):
+         for cls in reversed(mod.classes):
+diff --git a/scripts/startup/bl_operators/neural_finishing.py b/scripts/startup/bl_operators/neural_finishing.py
+new file mode 100644
+index 0000000..aa52147
+--- /dev/null
++++ b/scripts/startup/bl_operators/neural_finishing.py
+@@ -0,0 +1,286 @@
++# SPDX-FileCopyrightText: 2026 Jason Lok
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""WIP native Render Properties integration for an optional external worker.
++
++Importing or drawing this module never renders, loads a runtime or probes a GPU.
++Settings are session-only during this prototype; no DNA/file-versioning changes.
++"""
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import uuid
++
++import bpy
++from bpy.props import BoolProperty, EnumProperty, FloatProperty, PointerProperty, StringProperty
++from bpy.types import Operator, PropertyGroup
++
++_process = None
++_log = None
++
++
++def _digest(path):
++    result = hashlib.sha256()
++    with Path(path).open("rb") as stream:
++        for block in iter(lambda: stream.read(1024 * 1024), b""):
++            result.update(block)
++    return result.hexdigest()
++
++
++def _package(settings):
++    return Path(bpy.path.abspath(settings.package_directory)).resolve()
++
++
++def _background_render_exists():
++    if os.name != "nt":
++        return False
++    # Read-only, no process termination. Fail closed if enumeration is unavailable.
++    command = ("@(Get-CimInstance Win32_Process -Filter \"Name='blender.exe'\" | "
++               "Where-Object { $_.CommandLine -match '(?:^|\\s)(?:-b|--background)(?:\\s|$)' } | "
++               "Select-Object -ExpandProperty ProcessId) | ConvertTo-Json -Compress")
++    result = subprocess.run(["powershell.exe", "-NoProfile", "-Command", command],
++                            capture_output=True, text=True, timeout=15,
++                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
++    if result.returncode:
++        raise RuntimeError("Could not check for another background Blender render")
++    ids = json.loads(result.stdout) if result.stdout.strip() else []
++    if isinstance(ids, int):
++        ids = [ids]
++    return any(pid != os.getpid() for pid in ids)
++
++
++def _preflight(context, settings):
++    if os.name != "nt":
++        raise ValueError("The experimental backend currently requires Windows")
++    if _process is not None and _process.poll() is None:
++        raise ValueError("A neural-finishing job is already running")
++    if bpy.app.is_job_running("RENDER") or _background_render_exists():
++        raise ValueError("Another Blender render is active; no second render was started")
++    if not settings.enabled:
++        raise ValueError("Enable the experimental feature first")
++    scene = context.scene
++    if scene.render.engine != "CYCLES":
++        raise ValueError("Version one supports Cycles only")
++    if scene.camera is None or scene.camera.data.type != "PERSP":
++        raise ValueError("Select a perspective camera")
++    if any(marker.camera and marker.camera.data.type != "PERSP" for marker in scene.timeline_markers):
++        raise ValueError("All camera cuts must use perspective cameras")
++    if scene.render.film_transparent or scene.render.use_border or scene.render.use_multiview:
++        raise ValueError("Use opaque, uncropped, single-view output for this prototype")
++    if scene.render.use_sequencer and scene.sequence_editor is not None:
++        raise ValueError("The first prototype processes one scene, not Video Sequencer output")
++    if any(item.use and item != context.view_layer for item in scene.view_layers):
++        raise ValueError("Enable only the active view layer")
++    if bpy.data.libraries:
++        raise ValueError("Linked libraries are outside the first prototype's snapshot support")
++    package = _package(settings)
++    if not (package / "runtime/python.exe").is_file() or not (package / "neural_finishing/worker.py").is_file():
++        raise ValueError("Select the extracted experimental worker package")
++
++
++def _poll():
++    global _process, _log
++    if _process is None:
++        return None
++    for window in bpy.context.window_manager.windows:
++        for area in window.screen.areas:
++            if area.type == "PROPERTIES":
++                area.tag_redraw()
++    settings = bpy.context.window_manager.neural_finishing
++    try:
++        state = json.loads((Path(settings.last_job).parent / "status.json").read_text())
++        total = state.get("total", 0)
++        suffix = " %s/%s" % (state.get("completed", 0), total) if total else ""
++        settings.status = state["stage"].title() + suffix + ": " + state.get("message", "")
++    except (OSError, ValueError, KeyError):
++        pass
++    if _process.poll() is None:
++        return 0.5
++    settings.running = False
++    if _process.returncode not in (0, 75):
++        settings.status = "Failed: " + settings.status
++    if _log is not None:
++        _log.close()
++    _log = _process = None
++    return None
++
++
++def _launch(settings, job_path):
++    global _process, _log
++    package = _package(settings)
++    _log = (job_path.parent / "worker.log").open("ab")
++    try:
++        _process = subprocess.Popen(
++            [str(package / "runtime/python.exe"), "-m", "neural_finishing.worker", "--job", str(job_path)],
++            cwd=package, stdout=_log, stderr=subprocess.STDOUT,
++            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
++    except Exception:
++        _log.close()
++        _log = None
++        raise
++    settings.last_job = str(job_path)
++    settings.running = True
++    settings.status = "Starting background capture"
++    if not bpy.app.timers.is_registered(_poll):
++        bpy.app.timers.register(_poll, first_interval=0.5)
++
++
++class NeuralFinishingSettings(PropertyGroup):
++    enabled: BoolProperty(name="Enable Experimental Neural Finishing", default=False)
++    mode: EnumProperty(name="Mode", items=[("STILL", "Current Frame", ""), ("ANIMATION", "Frame Range", "")])
++    intensity: FloatProperty(name="Intensity", default=0.65, min=0, max=2)
++    structure: FloatProperty(name="Structure", default=0.65, min=0, max=2)
++    tone: FloatProperty(name="Tone", default=0.4, min=0, max=2)
++    style: EnumProperty(name="Style", items=[("STANDARD", "Standard", ""), ("NATURAL", "Natural", ""),
++                                           ("CINEMATIC", "Cinematic", "")], default="CINEMATIC")
++    package_directory: StringProperty(name="Worker Package", subtype="DIR_PATH")
++    output_directory: StringProperty(name="Output Folder", subtype="DIR_PATH", default="//neural_finishing/")
++    last_job: StringProperty(name="Last Job", subtype="FILE_PATH")
++    status: StringProperty(default="Disabled; no runtime loaded")
++    running: BoolProperty(default=False, options={"SKIP_SAVE"})
++
++
++class RENDER_OT_neural_finishing_probe(Operator):
++    bl_idname = "render.neural_finishing_probe"
++    bl_label = "Verify Worker Files"
++    bl_description = "Verify runtime files without rendering or initializing a GPU"
++
++    def execute(self, context):
++        settings = context.window_manager.neural_finishing
++        package = _package(settings)
++        try:
++            command = [str(package / "runtime/python.exe"), "-m", "neural_finishing.worker", "--probe"]
++            result = subprocess.run(command, cwd=package, capture_output=True, text=True, timeout=30,
++                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
++            response = json.loads(result.stdout if result.returncode == 0 else result.stderr)
++            settings.status = response["message"]
++            if result.returncode:
++                raise ValueError(settings.status)
++        except Exception as error:
++            self.report({"ERROR"}, str(error))
++            return {"CANCELLED"}
++        return {"FINISHED"}
++
++
++class RENDER_OT_neural_finishing(Operator):
++    bl_idname = "render.neural_finishing"
++    bl_label = "Render & Process"
++    bl_description = "Explicitly render a separate scene snapshot and run neural finishing"
++
++    def execute(self, context):
++        settings = context.window_manager.neural_finishing
++        try:
++            _preflight(context, settings)
++            root = Path(bpy.path.abspath(settings.output_directory)).resolve() / uuid.uuid4().hex[:12]
++            root.mkdir(parents=True, exist_ok=False)
++            snapshot = root / "scene.blend"
++            assets = []
++            for image in bpy.data.images:
++                if image.source == "FILE" and image.filepath and not image.packed_file:
++                    path = Path(bpy.path.abspath(image.filepath)).resolve()
++                    assets.append(dict(path=str(path), sha256=_digest(path)))
++                elif image.source in {"MOVIE", "SEQUENCE", "TILED"}:
++                    raise ValueError("Movie, sequence and tiled textures are outside the first prototype")
++            scene = context.scene
++            frames = [scene.frame_current] if settings.mode == "STILL" else list(range(scene.frame_start, scene.frame_end + 1))
++            bpy.ops.wm.save_as_mainfile(filepath=str(snapshot), copy=True, relative_remap=True)
++            job = dict(protocol=1, blender=bpy.app.binary_path, snapshot="scene.blend",
++                       snapshot_sha256=_digest(snapshot), source_file=bpy.data.filepath,
++                       scene=scene.name, view_layer=context.view_layer.name, frames=frames,
++                       width=scene.render.resolution_x * scene.render.resolution_percentage // 100,
++                       height=scene.render.resolution_y * scene.render.resolution_percentage // 100,
++                       backend="nvidia", assets=assets,
++                       runtime_manifest_sha256=_digest(_package(settings) / "runtime-manifest.json"),
++                       intensity=settings.intensity, structure=settings.structure,
++                       tone=settings.tone, style=settings.style)
++            job_path = root / "job.json"
++            job_path.write_text(json.dumps(job, indent=2), encoding="utf-8")
++            _launch(settings, job_path)
++        except Exception as error:
++            self.report({"ERROR"}, str(error))
++            return {"CANCELLED"}
++        return {"FINISHED"}
++
++
++class RENDER_OT_neural_finishing_cancel(Operator):
++    bl_idname = "render.neural_finishing_cancel"
++    bl_label = "Cancel"
++
++    def execute(self, context):
++        settings = context.window_manager.neural_finishing
++        if settings.running and settings.last_job:
++            (Path(settings.last_job).parent / "CANCEL").touch()
++            settings.status = "Cancelling; verified completed work will be retained"
++        return {"FINISHED"}
++
++
++class RENDER_OT_neural_finishing_resume(Operator):
++    bl_idname = "render.neural_finishing_resume"
++    bl_label = "Resume Last Job"
++
++    def execute(self, context):
++        settings = context.window_manager.neural_finishing
++        try:
++            _preflight(context, settings)
++            job_path = Path(settings.last_job).resolve()
++            if not job_path.is_file():
++                raise ValueError("Select an existing job.json to resume")
++            job_path.with_name("CANCEL").unlink(missing_ok=True)
++            _launch(settings, job_path)
++        except Exception as error:
++            self.report({"ERROR"}, str(error))
++            return {"CANCELLED"}
++        return {"FINISHED"}
++
++
++class RENDER_OT_neural_finishing_view(Operator):
++    bl_idname = "render.neural_finishing_view"
++    bl_label = "View Result"
++    processed: BoolProperty(default=True)
++
++    def execute(self, context):
++        settings = context.window_manager.neural_finishing
++        try:
++            job_path = Path(settings.last_job)
++            job = json.loads(job_path.read_text(encoding="utf-8"))
++            frame = context.scene.frame_current
++            if frame not in job["frames"]:
++                frame = job["frames"][0]
++            path = job_path.parent / ("processed" if self.processed else "beauty") / ("%07d.png" % frame)
++            if not path.is_file():
++                raise ValueError("This frame is not available yet")
++            image = bpy.data.images.load(str(path), check_existing=True)
++            editors = [area for area in context.screen.areas if area.type == "IMAGE_EDITOR"]
++            if not editors:
++                bpy.ops.render.view_show("INVOKE_DEFAULT")
++                editors = [area for window in context.window_manager.windows for area in window.screen.areas
++                           if area.type == "IMAGE_EDITOR"]
++            if not editors:
++                raise ValueError("Open an Image Editor to view the result")
++            for area in editors:
++                area.spaces.active.image = image
++        except Exception as error:
++            self.report({"ERROR"}, str(error))
++            return {"CANCELLED"}
++        return {"FINISHED"}
++
++
++classes = (
++    NeuralFinishingSettings,
++    RENDER_OT_neural_finishing_probe,
++    RENDER_OT_neural_finishing,
++    RENDER_OT_neural_finishing_cancel,
++    RENDER_OT_neural_finishing_resume,
++    RENDER_OT_neural_finishing_view,
++)
++
++
++def register():
++    bpy.types.WindowManager.neural_finishing = PointerProperty(type=NeuralFinishingSettings)
++
++
++def unregister():
++    if bpy.app.timers.is_registered(_poll):
++        bpy.app.timers.unregister(_poll)
++    del bpy.types.WindowManager.neural_finishing
+diff --git a/scripts/startup/bl_ui/__init__.py b/scripts/startup/bl_ui/__init__.py
+index 60d974a..73312cb 100644
+--- a/scripts/startup/bl_ui/__init__.py
++++ b/scripts/startup/bl_ui/__init__.py
+@@ -54,6 +54,7 @@ _modules = [
+     "properties_physics_fluid",
+     "properties_physics_softbody",
+     "properties_render",
++    "properties_neural_finishing",
+     "properties_output",
+     "properties_view_layer",
+     "properties_scene",
+diff --git a/scripts/startup/bl_ui/properties_neural_finishing.py b/scripts/startup/bl_ui/properties_neural_finishing.py
+new file mode 100644
+index 0000000..b73e3ea
+--- /dev/null
++++ b/scripts/startup/bl_ui/properties_neural_finishing.py
+@@ -0,0 +1,48 @@
++# SPDX-FileCopyrightText: 2026 Jason Lok
++# SPDX-License-Identifier: GPL-2.0-or-later
++from bpy.types import Panel
++
++
++class RENDER_PT_neural_finishing(Panel):
++    bl_label = "Neural Finishing (Experimental)"
++    bl_space_type = "PROPERTIES"
++    bl_region_type = "WINDOW"
++    bl_context = "render"
++    bl_options = {"DEFAULT_CLOSED"}
++
++    @classmethod
++    def poll(cls, context):
++        return context.scene is not None and context.engine == "CYCLES"
++
++    def draw_header(self, context):
++        self.layout.prop(context.window_manager.neural_finishing, "enabled", text="")
++
++    def draw(self, context):
++        layout = self.layout
++        settings = context.window_manager.neural_finishing
++        layout.use_property_split = True
++        layout.use_property_decorate = False
++        column = layout.column()
++        column.enabled = settings.enabled and not settings.running
++        column.prop(settings, "mode")
++        for name in ("intensity", "structure", "tone", "style", "package_directory", "output_directory"):
++            column.prop(settings, name)
++        column.operator("render.neural_finishing_probe", icon="CHECKMARK")
++        column.operator("render.neural_finishing", icon="RENDER_STILL")
++        if settings.running:
++            layout.operator("render.neural_finishing_cancel", icon="CANCEL")
++        layout.label(text=settings.status, icon="INFO")
++        layout.label(text="Separate SDR result; original HDR retained")
++        if settings.last_job:
++            row = layout.row()
++            row.enabled = not settings.running
++            row.prop(settings, "last_job")
++            row = layout.row()
++            row.enabled = settings.enabled and not settings.running
++            row.operator("render.neural_finishing_resume", icon="FILE_REFRESH")
++            row = layout.row(align=True)
++            row.operator("render.neural_finishing_view", text="Original").processed = False
++            row.operator("render.neural_finishing_view", text="Processed").processed = True
++
++
++classes = (RENDER_PT_neural_finishing,)
+diff --git a/tests/python/bl_pyapi_neural_finishing.py b/tests/python/bl_pyapi_neural_finishing.py
+new file mode 100644
+index 0000000..566921e
+--- /dev/null
++++ b/tests/python/bl_pyapi_neural_finishing.py
+@@ -0,0 +1,41 @@
++# SPDX-FileCopyrightText: 2026 Jason Lok
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Non-rendering checks for the WIP native operators. No optional worker needed."""
++import os
++import unittest
++from unittest import mock
++
++import bpy
++from bl_operators import neural_finishing
++
++
++class NeuralFinishingTest(unittest.TestCase):
++    def test_registered_default_off(self):
++        settings = bpy.context.window_manager.neural_finishing
++        self.assertFalse(settings.enabled)
++        self.assertFalse(settings.running)
++        self.assertIsNone(neural_finishing._process)
++        self.assertEqual(settings.mode, "STILL")
++
++    @unittest.skipUnless(os.name == "nt", "Current backend is Windows-only")
++    def test_other_render_blocks_before_snapshot(self):
++        settings = bpy.context.window_manager.neural_finishing
++        settings.enabled = True
++        try:
++            with mock.patch.object(neural_finishing, "_background_render_exists", return_value=True):
++                with self.assertRaisesRegex(ValueError, "Another Blender render"):
++                    neural_finishing._preflight(bpy.context, settings)
++        finally:
++            settings.enabled = False
++
++    def test_disabled_feature_never_launches(self):
++        settings = bpy.context.window_manager.neural_finishing
++        settings.enabled = False
++        with mock.patch.object(neural_finishing, "_background_render_exists", return_value=False):
++            with mock.patch.object(neural_finishing.subprocess, "Popen", side_effect=AssertionError("No process allowed")):
++                with self.assertRaises((ValueError, RuntimeError)):
++                    neural_finishing._preflight(bpy.context, settings)
++
++
++if __name__ == "__main__":
++    unittest.main(argv=[__file__])
+-- 
+2.54.0.windows.1
+
+
+From 2560937437e2618c0345e8d45868211830211c75 Mon Sep 17 00:00:00 2001
+From: Jason Lok <83269161+jasonlok000@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 17:48:30 -0400
+Subject: [PATCH 2/2] Docs: Record the WIP neural-finishing worker contract
+
+---
+ doc/experimental/neural_finishing.md | 53 ++++++++++++++++++++++++++++
+ 1 file changed, 53 insertions(+)
+ create mode 100644 doc/experimental/neural_finishing.md
+
+diff --git a/doc/experimental/neural_finishing.md b/doc/experimental/neural_finishing.md
+new file mode 100644
+index 0000000..ccc5190
+--- /dev/null
++++ b/doc/experimental/neural_finishing.md
+@@ -0,0 +1,53 @@
++# External worker protocol v1
++
++The native Blender UI and worker communicate through files, not an imported
++NVIDIA library. No network service is involved. `python -m
++neural_finishing.worker --probe` validates files only; `--job /path/job.json`
++explicitly starts capture and inference. Unknown protocol versions are rejected.
++
++The UI writes an immutable job directory containing a copied `scene.blend` and
++`job.json`. Required fields are protocol=1; Blender executable; relative snapshot
++path and SHA256; scene and view-layer names; ordered consecutive integer frames;
++positive pixel width/height; backend=`nvidia`; style=`STANDARD`, `NATURAL` or
++`CINEMATIC`; finite intensity/structure/tone in [0,2]; runtime manifest SHA256.
++External unpacked image files are listed with absolute paths and hashes. These
++are local job data, not uploaded telemetry. The native panel never selects the
++test-only fixture backend.
++
++The worker checks the snapshot and assets, acquires an OS-owned job lock, verifies
++the runtime files, and starts one background Blender capture process. `status.json`
++reports protocol, state, stage, completed, total, message and worker PID. States
++are running/complete/cancelled/error; capture stages are beauty/guides, followed
++by neural. Status replacement is atomic. Logs are local text files.
++
++Capture output consists of original `hdr/FRAME.exr`, display-transformed
++`beauty/FRAME.png`, `guides/FRAME.exr`, `metadata/FRAME.json`, and a verified
++`capture/FRAME.json` receipt. Metadata includes clipping planes, camera identity,
++camera-marker shot identity, world/projection matrices, resolution and the actual
++beauty/guide motion-blur flags. Guide files retain native float32 Z and Vector
++channels. Conversion uses perspective device depth and [Vector.X,-Vector.Y]
++current-to-previous pixel motion, with bottom-up orientation handled once in the
++native wrapper. Perspective reprojection on the new sample remains a deferred
++rendering validation; prior project-specific results are not generalized as proof.
++
++Within each shot, the worker creates a fresh native feature stream, zeros motion
++and resets history on the first frame, then evaluates sequentially. Processed
++PNGs and `shots/START_END.json` receipts are separate from originals. A receipt
++records input-job fingerprint, output hashes, frame resets and timings. A receipt
++is written only after the entire shot succeeds. Resume skips intact captures and
++complete shots; a partial or altered shot is reprocessed from its first frame.
++
++The UI requests cancellation by creating `CANCEL`. The worker terminates only its
++own background capture subprocess, or stops between native evaluations. Exit 75
++means cancelled; 0 complete; nonzero error otherwise. Resume explicitly removes
++the cancellation marker. A second worker cannot acquire the same job lock.
++
++A future backend implements initialization, process(color,depth,motion,settings,
++reset) and close behind this worker. The current BlenDLSS ABI-3 wrapper is an
++implementation detail, not a promise about a future official NVIDIA API. Native
++errors never silently produce a filtered substitute. The current interface is
++RGBA8 SDR and does not add frames or change resolution.
++
++The WIP native UI uses a session-only WindowManager property group and Python
++operators; no DNA structs, file versioning, C++ ABI or F12 handlers are changed.
++Persisting per-scene settings is intentionally deferred to upstream design review.
+-- 
+2.54.0.windows.1
+

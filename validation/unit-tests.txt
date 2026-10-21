@@ -1,0 +1,19 @@
+test_bad_runtime_hash_and_missing_runtime (test_worker.WorkerTests.test_bad_runtime_hash_and_missing_runtime) ... ok
+test_camera_cut_resets_and_sources_unchanged (test_worker.WorkerTests.test_camera_cut_resets_and_sources_unchanged) ... ok
+test_cancellation_midshot_is_not_marked_complete (test_worker.WorkerTests.test_cancellation_midshot_is_not_marked_complete) ... ok
+test_cancellation_never_starts_capture (test_worker.WorkerTests.test_cancellation_never_starts_capture) ... ok
+test_changed_snapshot_rejected (test_worker.WorkerTests.test_changed_snapshot_rejected) ... ok
+test_complete_shots_are_reused (test_worker.WorkerTests.test_complete_shots_are_reused) ... ok
+test_depth_endpoints_and_motion_axis (test_worker.WorkerTests.test_depth_endpoints_and_motion_axis) ... ok
+test_duplicate_worker_lock (test_worker.WorkerTests.test_duplicate_worker_lock) ... ok
+test_fixture_backend_cannot_be_selected_from_public_cli (test_worker.WorkerTests.test_fixture_backend_cannot_be_selected_from_public_cli) ... ok
+test_incomplete_output_receipt_reprocesses_whole_shot (test_worker.WorkerTests.test_incomplete_output_receipt_reprocesses_whole_shot) ... ok
+test_native_failure_and_resume_restart_incomplete_shot (test_worker.WorkerTests.test_native_failure_and_resume_restart_incomplete_shot) ... ok
+test_path_escape_and_protocol_rejected (test_worker.WorkerTests.test_path_escape_and_protocol_rejected) ... ok
+test_probe_does_not_initialize_backend (test_worker.WorkerTests.test_probe_does_not_initialize_backend) ... ok
+test_tampered_capture_rejected_before_backend (test_worker.WorkerTests.test_tampered_capture_rejected_before_backend) ... ok
+
+----------------------------------------------------------------------
+Ran 14 tests in 0.803s
+
+OK

@@ -1,0 +1,40 @@
+From 5237a76ed6d62801320cb590be277ae13323e8cc Mon Sep 17 00:00:00 2001
+From: Jason Lok <83269161+jasonlok000@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 17:46:58 -0400
+Subject: [PATCH] UI: Explain why Motion Blur disables the Vector pass
+
+Show a contextual explanation below the disabled Vector control in Cycles and EEVEE. This preserves the current pass restriction. Prepared with Codex assistance; human review and visual interface verification remain pending.
+---
+ intern/cycles/blender/addon/ui.py              | 2 ++
+ scripts/startup/bl_ui/properties_view_layer.py | 2 ++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/intern/cycles/blender/addon/ui.py b/intern/cycles/blender/addon/ui.py
+index cdad841..352f538 100644
+--- a/intern/cycles/blender/addon/ui.py
++++ b/intern/cycles/blender/addon/ui.py
+@@ -1091,6 +1091,8 @@ class CYCLES_RENDER_PT_passes_data(CyclesButtonsPanel, Panel):
+         sub = col.column()
+         sub.active = not rd.use_motion_blur
+         sub.prop(view_layer, "use_pass_vector")
++        if rd.use_motion_blur:
++            col.label(text="Vector pass disabled by Motion Blur", icon='INFO')
+         col.prop(view_layer, "use_pass_uv")
+         col.prop(view_layer, "use_pass_grease_pencil", text="Grease Pencil")
+ 
+diff --git a/scripts/startup/bl_ui/properties_view_layer.py b/scripts/startup/bl_ui/properties_view_layer.py
+index dd01b49..40373c9 100644
+--- a/scripts/startup/bl_ui/properties_view_layer.py
++++ b/scripts/startup/bl_ui/properties_view_layer.py
+@@ -131,6 +131,8 @@ class VIEWLAYER_PT_eevee_layer_passes_data(ViewLayerButtonsPanel, Panel):
+         sub = col.column()
+         sub.active = not scene.render.use_motion_blur
+         sub.prop(view_layer, "use_pass_vector")
++        if scene.render.use_motion_blur:
++            col.label(text="Vector pass disabled by Motion Blur", icon='INFO')
+         col.prop(view_layer, "use_pass_grease_pencil", text="Grease Pencil")
+ 
+         view_layer_eevee = view_layer.eevee
+-- 
+2.54.0.windows.1
+
