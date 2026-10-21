@@ -1,0 +1,8 @@
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.cmd text eol=crlf
+# Preserve format-patch context lines and upstream license texts verbatim.
+patches/*.patch -whitespace
+third_party/** -whitespace
+LICENSE -whitespace
